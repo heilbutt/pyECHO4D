@@ -11,6 +11,8 @@ from .input import write_input_file
 
 from .run import run
 
+from .postprocessor import PostProcessorRound
+
 __all__ = [
     "Coordinate",
     "LineSegment",
@@ -23,4 +25,5 @@ __all__ = [
     "generate_bellow",
     "write_input_file",
     "run",
+    "PostProcessorRound"
 ]

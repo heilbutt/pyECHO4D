@@ -4,8 +4,10 @@ from math import pi
 import numpy as np
 from scipy.constants import speed_of_light as c
 from scipy.fft import rfft, rfftfreq
+from scipy.integrate import trapezoid, cumulative_trapezoid
 
 from numpy.typing import NDArray
+
 
 
 class PostProcessorRound:
@@ -37,7 +39,7 @@ class PostProcessorRound:
         s_bunch = bunch_data[:, 0] # m
         i_bunch = bunch_data[:, self.bunch_offset_mesh_steps+2] # C/m
         self.b = np.interp(self.s, s_bunch, i_bunch) # C/m, interpolate bunch on wake axis
-        self.bunch_charge = np.trapezoid(self.b, self.s) # C
+        self.bunch_charge = trapezoid(self.b, self.s) # C
 
         # shift so bunch center is at s = 0
         self.s -= 5*self.bunch_sigma - self.ds/2
@@ -83,33 +85,56 @@ class PostProcessorRound:
         return f[:sample_cutoff], B[:sample_cutoff] # Hz, C
     
 
-    def get_longitudinal_wake(self, mode: int) -> tuple[NDArray, NDArray]:
+    def get_longitudinal_wake(
+        self,
+        mode: int,
+        save_to: str | Path | None = None,
+    ) -> tuple[NDArray, NDArray]:
         
         wake_data = np.loadtxt(self.work_dir / f'wakeL_{mode:02d}.txt', comments='%')
-        w = wake_data[2:,1]*1e9 # V/C/m^p, where p is mode index
-        w /= self.bunch_offset ** (2*mode)
+        w = wake_data[2:,1]*1e9 # V/C
+        w /= self.bunch_offset ** (2*mode) # V/C/m^(2p), where p is mode index
+
+        if save_to is not None:
+            unit = f'V/C/m^{2*mode:d}' if mode > 0 else 'V/C'
+            np.savetxt(
+                save_to, np.column_stack((s, w)), delimiter='\t',
+                header=f's (m)\tW_L ({unit})'
+            )
 
         return self.s, wake_data[2:,1]*1e9 # m, V/C/m^(2p)
     
 
-    def get_transverse_wake(self, mode: int) -> tuple[NDArray, NDArray]:
-        raise NotImplementedError
-        
-
-    def get_longitudinal_impedance(
+    def get_transverse_wake(
             self,
             mode: int,
+            save_to: str | Path | None = None,
+        ) -> tuple[NDArray, NDArray]:
+        
+        s, w_long = self.get_longitudinal_wake(mode) # m, V/C/m^(2p)
+        w_tran = -cumulative_trapezoid(w_long, s, initial=0) # m, V/C/m^(2p-1)
+
+        if save_to is not None:
+            unit = f'V/C/m^{2*mode-1:d}' if mode > 0 else 'V/C*m'
+            np.savetxt(
+                save_to, np.column_stack((s, w)), delimiter='\t',
+                header=f's (m)\tW_T ({unit})'
+            )
+
+
+    def _get_impedance(
+            self,
+            s: NDArray, # m
+            w: NDArray, # V/C/m^n (n = 2p for longitudinal, n = 2p-1 for transverse)
             oversampling: float = 1,
             deconvolution: bool = True,
             cutoff_by_bunch_sigma: float | None = 3,
         ) -> tuple[NDArray, NDArray]:
 
-        s, w = self.get_longitudinal_wake(mode) # m, V/C/m^(2p)
-
         n_samples = int(len(self.s) * oversampling + 0.5)
 
         f = rfftfreq(n_samples, d=self.ds/c) # Hz
-        Z = -np.asarray(rfft(w, n=n_samples)) * self.ds / c # Ohm/m^p
+        Z = -np.asarray(rfft(w, n=n_samples)) * self.ds / c # Ohm/m^n
         Z *= np.exp(-2j*pi*f * self.s[0]/c) # compensate phase offset from time shift
 
         # divide by bunch spectrum to deconvolve
@@ -125,15 +150,52 @@ class PostProcessorRound:
             df = f[1] - f[0]
             sample_cutoff = int(cutoff_by_bunch_sigma  / (2*pi * self.bunch_sigma/c) / df)
 
-        return f[:sample_cutoff], Z[:sample_cutoff], # Hz, Ohm/m^p
+        return f[:sample_cutoff], Z[:sample_cutoff], # Hz, Ohm/m^n
 
 
+    def get_longitudinal_impedance(
+            self,
+            mode: int,
+            oversampling: float = 1,
+            deconvolution: bool = True,
+            cutoff_by_bunch_sigma: float | None = 3,
+            save_to: str | Path | None = None,
+        ) -> tuple[NDArray, NDArray]:
+    
+        s, w = self.get_longitudinal_wake(mode) # m, V/C/m^(2p)
+
+        if save_to is not None:
+            unit = f'Ohm/m^{2*mode:d}' if mode > 0 else 'Ohm'
+            np.savetxt(
+                save_to, np.column_stack((s, w)), delimiter='\t',
+                header=f'f (Hz)\tZ_T ({unit})'
+            )
+
+        return self._get_impedance(
+            s, w, oversampling=oversampling,
+            deconvolution=deconvolution, cutoff_by_bunch_sigma=cutoff_by_bunch_sigma
+        ) # m, Ohm/m^(2p)
+
+    
     def get_transverse_impedance(
             self,
             mode: int,
             oversampling: float = 1,
             deconvolution: bool = True,
             cutoff_by_bunch_sigma: float | None = 3,
+            save_to: str | Path | None = None,
         ) -> tuple[NDArray, NDArray]:
+    
+        s, w = self.get_transverse_wake(mode) # m, V/C/m^(2p-1)
 
-        raise NotImplementedError
+        if save_to is not None:
+            unit = f'Ohm/m^{2*mode-1:d}' if mode > 0 else 'Ohm'
+            np.savetxt(
+                save_to, np.column_stack((s, w)), delimiter='\t',
+                header=f'f (Hz)\tZ_T ({unit})'
+            )
+
+        return self._get_impedance(
+            s, w, oversampling=oversampling,
+            deconvolution=deconvolution, cutoff_by_bunch_sigma=cutoff_by_bunch_sigma
+        ) # m, Ohm/m^(2p-1)
