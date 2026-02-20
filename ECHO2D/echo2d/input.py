@@ -6,7 +6,7 @@ from scipy.constants import speed_of_light as c
 
 from typing import Literal
 
-from .geometry.basic_elements import LengthUnit
+from ...preprocess.geometry.basic_elements import LengthUnit
 
 
 def write_input_file(
