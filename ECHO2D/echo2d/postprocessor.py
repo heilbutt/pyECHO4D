@@ -91,18 +91,23 @@ class PostProcessorRound:
         save_to: str | Path | None = None,
     ) -> tuple[NDArray, NDArray]:
         
-        wake_data = np.loadtxt(self.work_dir / f'wakeL_{mode:02d}.txt', comments='%')
-        w = wake_data[2:,1]*1e9 # V/C
-        w /= self.bunch_offset ** (2*mode) # V/C/m^(2p), where p is mode index
+        wake_file = self.work_dir / f'wakeL_{mode:02d}.txt'
+        wake_data = np.loadtxt(wake_file, comments='%')
+
+        s = wake_data [2:,0] # m
+        assert np.allclose(s, self.s), f's-axis in file `{wake_file} inconsistent!`'
+
+        w_long = wake_data[2:,1]*1e9 # V/C
+        w_long /= self.bunch_offset ** (2*mode) # V/C/m^(2p), where p is mode index
 
         if save_to is not None:
             unit = f'V/C/m^{2*mode:d}' if mode > 0 else 'V/C'
             np.savetxt(
-                save_to, np.column_stack((s, w)), delimiter='\t',
+                save_to, np.column_stack((self.s, w_long)), delimiter='\t',
                 header=f's (m)\tW_L ({unit})'
             )
 
-        return self.s, wake_data[2:,1]*1e9 # m, V/C/m^(2p)
+        return self.s, w_long # m, V/C/m^(2p)
     
 
     def get_transverse_wake(
@@ -112,14 +117,18 @@ class PostProcessorRound:
         ) -> tuple[NDArray, NDArray]:
         
         s, w_long = self.get_longitudinal_wake(mode) # m, V/C/m^(2p)
+        assert np.allclose(s, self.s), f's-axis from longitudinal wake inconsistent!'
+
         w_tran = -cumulative_trapezoid(w_long, s, initial=0) # m, V/C/m^(2p-1)
 
         if save_to is not None:
             unit = f'V/C/m^{2*mode-1:d}' if mode > 0 else 'V/C*m'
             np.savetxt(
-                save_to, np.column_stack((s, w)), delimiter='\t',
+                save_to, np.column_stack((self.s, w_tran)), delimiter='\t',
                 header=f's (m)\tW_T ({unit})'
             )
+
+        return self.s, w_tran # m, V/C/m^(2p-1)
 
 
     def _get_impedance(
@@ -130,6 +139,8 @@ class PostProcessorRound:
             deconvolution: bool = True,
             cutoff_by_bunch_sigma: float | None = 3,
         ) -> tuple[NDArray, NDArray]:
+
+        assert np.allclose(s, self.s), f's-axis from wake inconsistent!'
 
         n_samples = int(len(self.s) * oversampling + 0.5)
 
@@ -162,19 +173,22 @@ class PostProcessorRound:
             save_to: str | Path | None = None,
         ) -> tuple[NDArray, NDArray]:
     
-        s, w = self.get_longitudinal_wake(mode) # m, V/C/m^(2p)
+        s, w_long = self.get_longitudinal_wake(mode) # m, V/C/m^(2p)
+
+        f, Z_long = self._get_impedance(
+            s, w_long,
+            oversampling=oversampling,
+            deconvolution=deconvolution, cutoff_by_bunch_sigma=cutoff_by_bunch_sigma
+        ) # m, Ohm/m^(2p)
 
         if save_to is not None:
             unit = f'Ohm/m^{2*mode:d}' if mode > 0 else 'Ohm'
             np.savetxt(
-                save_to, np.column_stack((s, w)), delimiter='\t',
-                header=f'f (Hz)\tZ_T ({unit})'
+                save_to, np.column_stack((f, np.real(Z_long), np.imag(Z_long))), delimiter='\t',
+                header=f'f (Hz)\tRe(Z_L) ({unit})\tIm(Z_L) ({unit})'
             )
 
-        return self._get_impedance(
-            s, w, oversampling=oversampling,
-            deconvolution=deconvolution, cutoff_by_bunch_sigma=cutoff_by_bunch_sigma
-        ) # m, Ohm/m^(2p)
+        return f, Z_long # m, Ohm/m^(2p)
 
     
     def get_transverse_impedance(
@@ -186,16 +200,19 @@ class PostProcessorRound:
             save_to: str | Path | None = None,
         ) -> tuple[NDArray, NDArray]:
     
-        s, w = self.get_transverse_wake(mode) # m, V/C/m^(2p-1)
+        s, w_tran = self.get_transverse_wake(mode) # m, V/C/m^(2p-1)
 
-        if save_to is not None:
-            unit = f'Ohm/m^{2*mode-1:d}' if mode > 0 else 'Ohm'
-            np.savetxt(
-                save_to, np.column_stack((s, w)), delimiter='\t',
-                header=f'f (Hz)\tZ_T ({unit})'
-            )
-
-        return self._get_impedance(
-            s, w, oversampling=oversampling,
+        f, Z_tran = self._get_impedance(
+            s, w_tran,
+            oversampling=oversampling,
             deconvolution=deconvolution, cutoff_by_bunch_sigma=cutoff_by_bunch_sigma
         ) # m, Ohm/m^(2p-1)
+
+        if save_to is not None:
+            unit = f'Ohm/m^{2*mode-1:d}' if mode > 0 else 'Ohm*m'
+            np.savetxt(
+                save_to, np.column_stack((f, np.real(Z_tran), np.imag(Z_tran))), delimiter='\t',
+                header=f'f (Hz)\tRe(Z_T) ({unit})\tIm(Z_T) ({unit})'
+            )
+        
+        return f, Z_tran
